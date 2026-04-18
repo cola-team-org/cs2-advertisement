@@ -17,26 +17,19 @@ using CounterStrikeSharp.API.Modules.Entities;
 using CounterStrikeSharp.API.Modules.Timers;
 using CounterStrikeSharp.API.Modules.Utils;
 using MaxMind.GeoIP2;
+using Microsoft.Extensions.Logging;
 
 namespace Advertisement;
 
-public class User
-{
-    public bool HtmlPrint { get; set; }
-    public string Message { get; set; } = string.Empty;
-    public int PrintTime { get; set; }
-}
-
 public class Ads : BasePlugin
 {
-    public override string ModuleAuthor => "thesamefabius";
+    public override string ModuleAuthor => "thesamefabius & Nicklas Vedsted";
     public override string ModuleName => "Advertisement";
-    public override string ModuleVersion => "v1.0.9";
+    public override string ModuleVersion => "v2.0.0";
 
     private readonly List<Timer> _timers = new();
     private readonly Dictionary<ulong, string> _playerIsoCode = new();
-    public Config Config { get; set; } = null!;
-    private readonly User?[] _users = new User?[66];
+    private Config Config { get; set; } = null!;
 
     public override void Load(bool hotReload)
     {
@@ -45,15 +38,7 @@ public class Ads : BasePlugin
         RegisterEventHandler<EventPlayerConnectFull>(EventPlayerConnectFull);
         RegisterEventHandler<EventPlayerDisconnect>(EventPlayerDisconnect);
         RegisterListener<Listeners.OnClientAuthorized>(OnClientAuthorized);
-        RegisterListener<Listeners.OnTick>(OnTick);
         StartTimers();
-        if (hotReload)
-        {
-            foreach (var player in Utilities.GetPlayers())
-            {
-                _users[player.Slot] = new User();
-            }
-        }
     }
 
     private HookResult EventPlayerDisconnect(EventPlayerDisconnect @event, GameEventInfo info)
@@ -68,7 +53,6 @@ public class Ads : BasePlugin
     private void OnClientAuthorized(int slot, SteamID id)
     {
         var player = Utilities.GetPlayerFromSlot(slot);
-        _users[slot] = new User();
         if (Config.LanguageMessages == null) return;
         if (player is not null && player.IpAddress != null)
             _playerIsoCode.TryAdd(id.SteamId64, GetPlayerIsoCode(player.IpAddress.Split(':')[0]));
@@ -83,31 +67,6 @@ public class Ads : BasePlugin
         var msg = welcomeMsg.Message.Replace("{PLAYERNAME}", player.PlayerName).ReplaceColorTags();
         PrintWrappedLine(null, msg, player, true);
         return HookResult.Continue;
-    }
-
-    private void OnTick()
-    {
-        foreach (var player in Utilities.GetPlayers())
-        {
-            var user = _users[player.Slot];
-            var showWhenDead = Config.ShowHtmlWhenDead;
-            if (user is not null &&
-                user.HtmlPrint &&
-                (showWhenDead is null || showWhenDead == false ||
-                 (showWhenDead == true && !player.PawnIsAlive)))
-            {
-                var duration = Config.HtmlCenterDuration;
-                if (duration != null && TimeSpan.FromSeconds(user.PrintTime / 64.0).Seconds < duration.Value)
-                {
-                    player.PrintToCenterHtml(user.Message);
-                    user.PrintTime++;
-                }
-                else
-                {
-                    user.HtmlPrint = false;
-                }
-            }
-        }
     }
 
     private void ShowAd(Advertisement ad)
@@ -154,7 +113,7 @@ public class Ads : BasePlugin
         }
         const string msg = "\x08[\x0C Advertisement \x08] configuration successfully rebooted!";
         if (controller == null)
-            Console.WriteLine(msg);
+            Logger.LogInformation(msg);
         else
             controller.PrintToChat(msg);
     }
@@ -168,7 +127,7 @@ public class Ads : BasePlugin
             if (welcomeMessage is null) return;
             AddTimer(welcomeMessage.DisplayDelay, () =>
             {
-                if (connectPlayer == null || !connectPlayer.IsValid) return;
+                if (!connectPlayer.IsValid) return;
                 var processedMessage = ProcessMessage(message, connectPlayer.SteamID)
                     .Replace("{PLAYERNAME}", connectPlayer.PlayerName);
                 switch (welcomeMessage.MessageType)
@@ -178,9 +137,6 @@ public class Ads : BasePlugin
                         break;
                     case MessageType.Center:
                         connectPlayer.PrintToCenter(processedMessage);
-                        break;
-                    case MessageType.CenterHtml:
-                        SetHtmlPrintSettings(connectPlayer, processedMessage);
                         break;
                 }
             });
@@ -197,26 +153,10 @@ public class Ads : BasePlugin
                 }
                 else
                 {
-                    if (Config.PrintToCenterHtml != null && Config.PrintToCenterHtml.Value)
-                        SetHtmlPrintSettings(player, processedMessage);
-                    else
-                        player.PrintToCenter(processedMessage);
+                    player.PrintToCenter(processedMessage);
                 }
             }
         }
-    }
-
-    private void SetHtmlPrintSettings(CCSPlayerController player, string message)
-    {
-        var user = _users[player.Slot];
-        if (user is null)
-        {
-            _users[player.Slot] = new User();
-            return;
-        }
-        user.HtmlPrint = true;
-        user.PrintTime = 0;
-        user.Message = message;
     }
 
     private string ProcessMessage(string message, ulong steamId)
@@ -280,10 +220,9 @@ public class Ads : BasePlugin
     {
         var config = new Config
         {
-            PrintToCenterHtml = false,
             WelcomeMessage = new WelcomeMessage
             {
-                //0 - CHAT | 1 - CENTER | 2 - CENTER HTML
+                //0 - CHAT | 1 - CENTER
                 MessageType = 0,
                 Message = "Welcome, {BLUE}{PLAYERNAME}",
                 DisplayDelay = 5
@@ -380,11 +319,8 @@ public class Ads : BasePlugin
 
 public class Config
 {
-    public bool? PrintToCenterHtml { get; init; }
-    public float? HtmlCenterDuration { get; init; }
-    public bool? ShowHtmlWhenDead { get; set; }
     public WelcomeMessage? WelcomeMessage { get; init; }
-    public List<Advertisement> Ads { get; init; } = new List<Advertisement>();
+    public List<Advertisement> Ads { get; init; } = new();
     public List<string>? Panel { get; init; }
     public string? DefaultLang { get; init; }
     public Dictionary<string, Dictionary<string, string>>? LanguageMessages { get; init; }
@@ -395,7 +331,6 @@ public enum MessageType
 {
     Chat = 0,
     Center,
-    CenterHtml
 }
 
 public class WelcomeMessage
