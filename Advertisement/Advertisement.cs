@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -25,20 +25,60 @@ public class Ads : BasePlugin
 {
     public override string ModuleAuthor => "thesamefabius & Nicklas Vedsted";
     public override string ModuleName => "Advertisement";
-    public override string ModuleVersion => "v2.0.0";
+    public override string ModuleVersion => "v2.1.0";
 
     private readonly List<Timer> _timers = new();
     private readonly Dictionary<ulong, string> _playerIsoCode = new();
+    private readonly Dictionary<string, CommandInfo.CommandCallback> _messageCommands = new(StringComparer.OrdinalIgnoreCase);
     private Config Config { get; set; } = null!;
 
     public override void Load(bool hotReload)
     {
         Config = LoadConfig();
-        Console.WriteLine(Config.Panel == null);
+        RegisterMessageCommands();
         RegisterEventHandler<EventPlayerConnectFull>(EventPlayerConnectFull);
         RegisterEventHandler<EventPlayerDisconnect>(EventPlayerDisconnect);
         RegisterListener<Listeners.OnClientAuthorized>(OnClientAuthorized);
         StartTimers();
+    }
+
+    private void RegisterMessageCommands()
+    {
+        foreach (var (name, callback) in _messageCommands)
+            RemoveCommand(name, callback);
+        _messageCommands.Clear();
+
+        foreach (var ad in Config.Ads)
+        {
+            if (ad.TriggerAd == null) continue;
+            var message = ad.Message;
+            // Existing message groups can also be triggered: use their first chat message.
+            if (string.IsNullOrWhiteSpace(message))
+                message = ad.Messages.FirstOrDefault(m => m.ContainsKey("Chat"))?.GetValueOrDefault("Chat");
+            if (string.IsNullOrWhiteSpace(message)) continue;
+
+            foreach (var configuredName in ad.TriggerAd)
+            {
+                var name = configuredName?.Trim().TrimStart('!', '/').ToLowerInvariant() ?? "";
+                if (name.StartsWith("css_", StringComparison.Ordinal)) name = name[4..];
+                if (!Regex.IsMatch(name, @"^[a-z0-9_]+$") || name == "advert_reload")
+                {
+                    Logger.LogWarning("Skipping invalid advertisement command: {Command}", configuredName);
+                    continue;
+                }
+
+                var commandName = "css_" + name;
+                if (_messageCommands.ContainsKey(commandName)) continue;
+                CommandInfo.CommandCallback callback = (player, command) =>
+                {
+                    if (player == null || !player.IsValid || player.IsBot) return;
+                    player.PrintToChat(" " + ProcessMessage(message, player.SteamID)
+                        .Replace("{PLAYERNAME}", player.PlayerName));
+                };
+                AddCommand(commandName, "Show a configured advertisement message", callback);
+                _messageCommands.Add(commandName, callback);
+            }
+        }
     }
 
     private HookResult EventPlayerDisconnect(EventPlayerDisconnect @event, GameEventInfo info)
@@ -71,6 +111,11 @@ public class Ads : BasePlugin
 
     private void ShowAd(Advertisement ad)
     {
+        if (!string.IsNullOrWhiteSpace(ad.Message))
+        {
+            PrintWrappedLine(HudDestination.Chat, ad.Message);
+            return;
+        }
         var messages = ad.NextMessages;
         foreach (var (type, message) in messages)
         {
@@ -90,6 +135,13 @@ public class Ads : BasePlugin
     {
         foreach (var ad in Config.Ads)
         {
+            if (ad.DisableInterval) continue;
+            if (!float.IsFinite(ad.Interval) || ad.Interval <= 0 ||
+                (string.IsNullOrWhiteSpace(ad.Message) && ad.Messages.Count == 0))
+            {
+                Logger.LogWarning("Skipping advertisement with invalid interval or no messages.");
+                continue;
+            }
             _timers.Add(AddTimer(ad.Interval, () => ShowAd(ad), TimerFlags.REPEAT));
         }
     }
@@ -99,6 +151,7 @@ public class Ads : BasePlugin
     public void ReloadAdvertConfig(CCSPlayerController? controller, CommandInfo command)
     {
         Config = LoadConfig();
+        RegisterMessageCommands();
         foreach (var timer in _timers) timer.Kill();
         _timers.Clear();
         StartTimers();
@@ -212,7 +265,7 @@ public class Ads : BasePlugin
         var configPath = Path.Combine(directory, "Advertisement.json");
         if (!File.Exists(configPath)) return CreateConfig(configPath);
         var config = JsonSerializer.Deserialize<Config>(File.ReadAllText(configPath),
-            new JsonSerializerOptions { ReadCommentHandling = JsonCommentHandling.Skip })!;
+            new JsonSerializerOptions { ReadCommentHandling = JsonCommentHandling.Skip, PropertyNameCaseInsensitive = true })!;
         return config;
     }
 
@@ -229,6 +282,12 @@ public class Ads : BasePlugin
             },
             Ads = new List<Advertisement>
             {
+                new()
+                {
+                    Message = "Discord: {GREEN}discord.gg/colateam",
+                    DisableInterval = true,
+                    TriggerAd = new List<string> { "discord" }
+                },
                 new()
                 {
                     Interval = 35,
@@ -342,6 +401,9 @@ public class WelcomeMessage
 
 public class Advertisement
 {
+    public string? Message { get; init; }
+    public bool DisableInterval { get; init; }
+    public List<string>? TriggerAd { get; init; }
     public float Interval { get; init; }
     public List<Dictionary<string, string>> Messages { get; init; } = new List<Dictionary<string, string>>();
     private int _currentMessageIndex;

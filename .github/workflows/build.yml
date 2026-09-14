@@ -1,0 +1,69 @@
+name: Build & Publish Advertisement
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'README.md'
+      - 'Advertisement.example.json'
+
+permissions:
+  contents: write
+
+env:
+  BUILD_NUMBER: ${{ github.run_number }}
+  PROJECT_PATH: Advertisement/Advertisement.csproj
+  OUTPUT_PATH: ./BuildOutput/addons/counterstrikesharp/plugins/Advertisement
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        run: dotnet restore "$PROJECT_PATH"
+
+      - name: Build
+        run: dotnet build "$PROJECT_PATH" -c Release --no-restore -o "$OUTPUT_PATH"
+
+      - name: Package plugin
+        run: |
+          test -f "$OUTPUT_PATH/Advertisement.dll"
+          test -f "$OUTPUT_PATH/Advertisement.deps.json"
+          test -f "$OUTPUT_PATH/GeoLite2-Country.mmdb"
+          test -f "$OUTPUT_PATH/MaxMind.GeoIP2.dll"
+          test -f "$OUTPUT_PATH/MaxMind.Db.dll"
+          cd BuildOutput
+          zip -r "../Advertisement-build-${BUILD_NUMBER}.zip" addons -x '*.pdb' '*.xml'
+
+      - name: Prepare release notes
+        env:
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          Path('release-notes.md').write_text(
+              '## Release Notes for Build ' + os.environ['BUILD_NUMBER'] + '\n\n'
+              + os.environ['COMMIT_MESSAGE'] + '\n', encoding='utf-8')
+          PY
+
+      - name: Publish release
+        uses: ncipollo/release-action@v1.12.0
+        with:
+          tag: ${{ github.ref_name }}-build-${{ env.BUILD_NUMBER }}
+          name: ${{ github.ref_name }} - Build ${{ env.BUILD_NUMBER }}
+          commit: ${{ github.sha }}
+          artifacts: Advertisement-build-${{ env.BUILD_NUMBER }}.zip
+          bodyFile: release-notes.md
+          generateReleaseNotes: false
+          allowUpdates: true
+          artifactErrorsFailBuild: true
