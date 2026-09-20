@@ -16,6 +16,7 @@ using CounterStrikeSharp.API.Modules.Cvars;
 using CounterStrikeSharp.API.Modules.Entities;
 using CounterStrikeSharp.API.Modules.Timers;
 using CounterStrikeSharp.API.Modules.Utils;
+using MaxMind.Db;
 using MaxMind.GeoIP2;
 using Microsoft.Extensions.Logging;
 
@@ -25,12 +26,38 @@ public class Ads : BasePlugin
 {
     public override string ModuleAuthor => "thesamefabius & Nicklas Vedsted";
     public override string ModuleName => "Advertisement";
-    public override string ModuleVersion => "v2.1.0";
+    public override string ModuleVersion => "v2.1.1";
 
     private readonly List<Timer> _timers = new();
     private readonly Dictionary<ulong, string> _playerIsoCode = new();
     private readonly Dictionary<string, CommandInfo.CommandCallback> _messageCommands = new(StringComparer.OrdinalIgnoreCase);
     private Config Config { get; set; } = null!;
+    private DatabaseReader? _geoReader;
+    private bool _geoReaderFailed;
+
+    public override void Unload(bool hotReload)
+    {
+        _geoReader?.Dispose();
+        _geoReader = null;
+    }
+
+    // One reader for the whole plugin lifetime. FileAccessMode.Memory loads the ~6 MB .mmdb once and
+    // avoids MemoryMappedFile.OpenExisting (PlatformNotSupportedException on Linux) on every lookup.
+    private DatabaseReader? GetGeoReader()
+    {
+        if (_geoReader != null || _geoReaderFailed) return _geoReader;
+        try
+        {
+            _geoReader = new DatabaseReader(Path.Combine(ModuleDirectory, "GeoLite2-Country.mmdb"),
+                FileAccessMode.Memory);
+        }
+        catch (Exception ex)
+        {
+            _geoReaderFailed = true;
+            Logger.LogError(ex, "Could not open GeoLite2-Country.mmdb");
+        }
+        return _geoReader;
+    }
 
     public override void Load(bool hotReload)
     {
@@ -364,9 +391,10 @@ public class Ads : BasePlugin
         if (ip == "127.0.0.1") return defaultLang;
         try
         {
-            using var reader = new DatabaseReader(Path.Combine(ModuleDirectory, "GeoLite2-Country.mmdb"));
-            var response = reader.Country(IPAddress.Parse(ip));
-            return response.Country.IsoCode ?? defaultLang;
+            var reader = GetGeoReader();
+            if (reader != null && IPAddress.TryParse(ip, out var address) &&
+                reader.TryCountry(address, out var response) && response != null)
+                return response.Country.IsoCode ?? defaultLang;
         }
         catch (Exception ex)
         {
